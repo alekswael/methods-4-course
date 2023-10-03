@@ -1,0 +1,408 @@
+---
+title: "Methods 4 -- Portfolio Assignment 2"
+output: html_notebook
+---
+
+- *Type:* Group assignment
+- *Due:* 3 April 2022, 23:59
+
+```{r}
+pacman::p_load(rethinking, tidyverse, dagitty)
+```
+
+
+Hello CogSci\'s :)
+
+In this portfolio, you are asked to do four tasks:
+
+\- Make a DAG for something
+
+\- Simulate data that fits the DAG
+
+\- Use linear models to confirm that the DAG fits the data
+
+\- Mess it up.
+
+Each of the four tasks have some sub-steps.\
+Report briefly what you find, for example in a markdown document, for
+example called report.md so that the poor TA can easily get an overview
+before looking in your code :)
+
+Then you can also make a (brief!) explanation of the phenomenon you are
+DAGGIN, simulating and modelling.
+
+Looking forward !
+
+## Task 1: The DAG
+
+\- **Come up with an** incredibly interesting and scientifically
+important made-up **example** for a phenomenon to investigate. Decide on
+two variables (an outcome and a predictor) that you would like to
+investigate the relation between. If in doubt, you **can be inspired by
+Peter\'s amazing example** on the next page.
+
+\- **Make a DAG** for the phenomenon. Make it medium complicated: that
+means, make sure there are some different kinds of relations (see next
+step). Change it if you don\'t get anything interesting for the next
+steps.\
+
+**Draw it** somehow (on paper, in R, laser engraved in diamond).\
+**Code it** in dagitty (this is a nice tool:
+http://dagitty.net/dags.html )
+
+```{r}
+
+
+dag <- dagitty( "dag {
+    M -> B
+    M -> D -> B
+    M <- P -> B
+    D <- S -> P
+}")
+
+drawdag(dag)
+
+```
+
+
+\- Find **elemental forms of variable relations** in the DAG
+(i.e., forks, pipes, colliders, and their descendants).
+
+\- Find out **what variables to include (and not include)** in a
+multiple linear regression to avoid \'back door\' (AKA non-causal)
+paths. Do this first with your eyes and your mind. Then you can use
+dagitty\'s function `adjustmentSets()`.
+
+```{r}
+
+adjustmentSets(dag, exposure="D" , outcome="B")
+
+```
+
+
+\- Find out which **conditional independencies** the DAG implies. First
+with the mind, then with daggity\'s function
+`impliedConditionalIndependencies()`.
+
+```{r}
+
+impliedConditionalIndependencies(dag)
+
+```
+
+\- Find the full list of **Markov equivalent** DAGS. Use daggity\'s
+function `equivalentGraphs()`.
+
+```{r}
+
+
+
+```
+
+
+## Task 2: The data
+
+\- **Simulate some data that fits the DAG.** There are many ways to do
+this. A simple way is just to sample one variable from a normal
+distribution which has another variable as mean. McElreath does this in
+the book a few times, and you can use this as inspiration.
+
+```{r}
+
+### Simulating the predictor variables
+
+# First we simulate **S** - which is the total area of the bar.
+# In our simulation, the area of the venue chosen for Broca's Bodega is normally distributed 
+# with a mean of 120 squared meters and a SD of 30 squared meters.
+S = rnorm(300, 120, 30)
+
+# Now, **S** affects **D** - the number of people Dancing and **P** - beer price.
+
+# Beer price **P** is normally distributed with a mean of 15 and SD of 3
+P = rnorm(300, 15, 3)
+# And it also increases with each squared meter, because of higher rent
+# by approximately 3 krona on average, with an SD of 0.5
+P = P + rnorm(300, S/120*3, 0.5)
+
+# Besides being influenced by P, The number of people dancing D is also 
+# influenced by whether there is live music or not.
+
+# So we need to simulate M, which is, in turn, influenced by P - beer price.
+# M is a binomial distribution with a 50% likelihood of landing on either 0 or 1
+# However, when the beer price goes over 17 dkk, the chance of there being a 
+# live music at the friday bar increases by 15%
+M = rbinom(300, 1, ifelse(P >= 17, 0.65, 0.50))
+
+# Now that we have M, we can simulate D, which is influenced by both S and M.
+
+# If there is live music, then the mean people dancing increases from 40 to 50
+# with a standard deviation of 5
+D = rnorm(300, ifelse(M==0, 40, 50), 5)
+
+# Additionally, if the venue of the friday bar is more than 120 squares
+# Around 10 people with an SD of 2 will join the dance floor
+# If the area is less than 120, then 10 +-2 will leave the dancefloor.
+D = D + rnorm(300, ifelse(S<= 120, -10, +10), 2)
+
+### Now we are ready to simulate the outcome variables - beers consumed B.
+
+# In order to simulate B, which is dependant on M, D and P, we have to simulate
+# betas that will encode the relationships between the variables.
+
+# If there is live music, people, on average consume 2 more beers, 
+# with an SD of 3
+bM = rnorm(300, 2, 0.3)
+
+# For the first friend present, you are much more likely to drink more beers then for the second (and so on), we use a lognorm
+# b2 = rlnorm(1000, 0, 0.3)
+# This will not work, the proper formula for this will be 2*log(F)
+
+# If the price of the beer increases, the beers consumed will also increase,
+# because of the joy derived from spending state money rich Danish students have.
+bP = rnorm(300, 0.08, 0.02)
+
+# The more people, the more beers you will drink.
+bD = rnorm(300, 0.05, 0.01)
+
+
+# Now we finally simulate the outcome variable B.
+B = rpois(300, 6 + bM*M + bP*P + bD*D)
+
+```
+
+## Task 3: Statistics
+
+\- Run **multiple linear regression**s to **test the conditional
+independencies** **implied by your DAG**.3 Make sure to avoid backdoor
+paths. See that the linear model shows the conditional independencies
+implied by your DAG, implying that the data and the DAG are compatible
+(if the linear model doesn\'t show the conditional independencies
+implied by the DAG, the data and the DAG doesn\'t fit).
+
+```{r}
+
+
+
+```
+
+
+
+```{r}
+
+dat = list(
+  
+  M = df$M,
+  B = df$B,
+  P = df$P,
+  D = df$D,
+  Dbar = mean(df$D)
+)
+
+m1 <- quap(
+  alist(
+    
+    ## M -> B
+    
+    B ~ dnorm(mu_B, sigma_B),
+    mu_B <- aB[M],
+    aB[M] ~ dnorm(12, 2),
+    sigma_B ~ dexp(1)
+    
+    ## M -> D -> B
+    
+    
+    
+    
+    
+  ), data = dat
+  
+)
+
+precis(m1, depth = 2)
+
+m2 <- quap(
+  alist(
+    
+    ## M -> B
+    
+    B ~ dnorm(mu, sigma),
+    mu <- a[M] + b * D,
+    a[M] ~ dnorm(7, 2),
+    b ~ dnorm(0.06, 0.02),
+    sigma ~ dexp(1)
+    
+    ## M -> D -> B
+    
+    
+  ), data = dat
+  
+)
+
+precis(m2, depth = 2)
+
+
+m3 = quap(
+  alist(
+    
+    ## M -> B
+    
+    #beers
+    
+    B ~ dnorm(mu, sigma),
+    mu <- a[M] + b*D,
+    a[M] ~ dnorm(7, 2),
+    b ~ dnorm(0.06, 0.02),
+    sigma ~ dexp(1),
+    
+    #people dancing
+    
+    D ~ dnorm(nu, tau),
+    nu <- d[M],
+    d[M] ~ dnorm(40, 5),
+    tau ~ dexp(1)
+    
+    # price on shit
+    
+    
+  ), data = dat
+  
+)
+
+precis(m3, depth = 2)
+
+```
+
+```{r}
+
+dat = list(
+  M = scale(df$M),
+  B = scale(df$B),
+  P = scale(df$P),
+  D = scale(df$D)
+)
+
+m1 <- quap(
+  alist(
+    
+    ## D -> P
+    
+    P ~ dnorm(mu, sigma),
+    mu <- a + bD * D,
+    a ~ dnorm(0, 0.2), #these priors are bad rethink plz
+    bD ~ dnorm(0, 0.5), #these priors are bad rethink plz
+    sigma ~ dexp(1)
+    
+  ), data = dat
+)
+
+m2 <- quap(
+  alist(
+    
+    ## D -> M - > P
+    
+    P ~ dnorm(mu, sigma),
+    mu <- a + bD * D + bM * M, 
+    a ~ dnorm(0, 0.2), #these priors are bad rethink plz
+    bD ~ dnorm(0, 0.5), #these priors are bad rethink plz
+    bM ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+    
+  ), data = dat
+)
+
+m3 <- quap(
+  alist(
+    
+    ## M -> P
+    
+    P ~ dnorm(mu, sigma),
+    mu <- a + bM * M, 
+    a ~ dnorm(0, 0.2), #these priors are bad rethink plz
+    bM ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+    
+  ), data = dat
+)
+
+plot(coeftab(m1, m2, m3), pars = c("bD", "bM"))
+
+summary(lm(P ~ D + M , data = df)
+
+```
+The slope of D moves closer to zero when we condition by M.
+
+## Task 4: Messing it up
+
+\- Try and **deliberately have an open back door path** and see if you
+can get wrong inference.
+
+**#**: But that's basically what we did above? P -> M -> D is a backdoor path?
+
+\- Try and deliberately **simulate some data that doesn\'t fit the
+DAG**, or **create a new DAG that doesn\'t fit the data**.
+
+**##**: Can simulate new data.
+
+\- Use the same approach as above to **show that the DAG is wrong** (by
+showing that conditional independencies don\'t exist in the data, for
+example).
+
+**##**: So that could be simply doing the same thing as we did in task 3 but with data that doesn't fit the conditional indepencies.
+
+
+
+## Peter\'s perfectly optimal and extremely interesting example
+
+*In a galaxy far, far away\...*
+
+*It is a period of civil wars in the galaxy. A brave alliance of
+underground freedom fighters has challenged the tyranny and oppression
+of the awesome GALACTIC EMPIRE.*
+
+*To crush the rebellion once and for all, the EMPIRE is constructing a
+sinister new battle station. Powerful enough to destroy an entire
+planet, its completion spells certain doom for the champions of
+freedom.*
+
+*The evil Emperor has figured out, however, that neither the battle
+station nor the Force can help him avoid that more solar systems join
+the rebellion. He has therefore hired a CogSci student to use causal
+modelling and multiple linear regressions to investigate how the
+activity of the Death Star and other factors affects the probability
+that a given solar system will join the rebellion (this allows him to
+more optimally suppress freedom in the Galaxy).*
+
+*You are that student.*
+
+We assume that the probability of a solar system joining the rebellion depends on\
+- how many rebellion sympathizers there is in the system (more rebels
+-\> higher probability of joining the rebellion)\
+- how scared people are in the system (more scared -\> lower probability
+of joining the rebellion).
+
+How many rebellion sympathizers there is in a system depends on
+
+\- crime levels (less crime -\> less rebellion sympathizers)
+
+\- number of planets recently destroyed by the Death Star (more planets
+destroyed -\> more rebellion sympathizers)
+
+\- number of Jedis in the system (more Jedis -\> more rebellion
+sympathizers)
+
+How scared people are depends on
+
+\- whether or not the Death Star is nearby (nearby -\> more scared)
+
+\- how many jedis are in the system (more Jedis -\> less scared)
+
+\- how much time Darth Vader has spent in the system recently (more time
+-\> more scared)
+
+Crime levels depend on
+
+\- number of planets recently destroyed by the Death Star (more planets
+destroyed -\> less crime)
+
+And so on\....
+

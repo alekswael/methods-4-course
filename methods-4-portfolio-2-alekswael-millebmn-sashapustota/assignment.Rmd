@@ -1,0 +1,445 @@
+---
+title: "Methods 4 -- Portfolio Assignment 2"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r}
+pacman::p_load(tidyverse, rethinking, dagitty, GGally)
+```
+
+
+- *Type:* Group assignment
+- *Due:* 3 April 2022, 23:59
+
+Hello CogSci\'s :)w
+
+
+In this portfolio, you are asked to do four tasks:
+
+\- Make a DAG for something
+
+\- Simulate data that fits the DAG
+
+\- Use linear models to confirm that the DAG fits the data
+
+\- Mess it up.
+
+Each of the four tasks have some sub-steps.\
+Report briefly what you find, for example in a markdown document, for
+example called report.md so that the poor TA can easily get an overview
+before looking in your code :)
+
+Then you can also make a (brief!) explanation of the phenomenon you are
+DAGGIN, simulating and modelling.
+
+Looking forward !
+
+## Task 1: The DAG
+
+\- **Come up with an** incredibly interesting and scientifically
+important made-up **example** for a phenomenon to investigate. Decide on
+two variables (an outcome and a predictor) that you would like to
+investigate the relation between. If in doubt, you **can be inspired by
+Peter\'s amazing example** on the next page.
+
+\- **Make a DAG** for the phenomenon. Make it medium complicated: that
+means, make sure there are some different kinds of relations (see next
+step). Change it if you don\'t get anything interesting for the next
+steps.\
+**Draw it** somehow (on paper, in R, laser engraved in diamond).\
+**Code it** in dagitty (this is a nice tool:
+http://dagitty.net/dags.html )
+
+
+We want to investigate the effect of having live music (M) at a friday-bar on beer purchase (B). 
+
+M: Whether there is live music playing at the bar or not (binary)
+P: The price of a beer.
+D: How many people are dancing.
+B: The amount of beers sold.
+S: The size of the bar in m^2.
+
+Our DAG is based on these assumptions:
+Amount of beers sold (B) decreases with the price of a beer (P), increases with how many people are dancing (D) and increases if there is live music present (M).
+It is more likely that there is live music (M) if the beer prices are higher (P), and more people will be dancing (D) is there is live music (M). By increasing the size of the bar (S), we will expect more people to dance and the beer prices to increase (P).
+
+```{r Making a DAG}
+DAG <- dagitty( "dag {
+D <- S -> P
+P -> M -> D -> B
+P -> B <- M 
+}")
+coordinates(DAG) <- list(x= c(B=0,S=0,M=0, D=-1, P=1), y=c(B=1, M=2, D=2, P=2, S=3))
+drawdag(DAG)
+```
+
+
+\- Find **elemental forms of variable relations** in the DAG
+(i.e., forks, pipes, colliders, and their descendants).
+
+lavmig**
+
+
+\- Find out **what variables to include (and not include)** in a
+multiple linear regression to avoid \'back door\' (AKA non-causal)
+paths. Do this first with your eyes and your mind. Then you can use
+dagitty\'s function `adjustmentSets()`.
+
+```{r}
+adjustmentSets(DAG, "M", "B") 
+```
+
+
+\- Find out which **conditional independencies** the DAG implies. First
+with the mind, then with daggity\'s function
+`impliedConditionalIndependencies()`.
+
+```{r}
+impliedConditionalIndependencies(DAG)
+```
+
+
+\- Find the full list of **Markov equivalent** DAGS. Use daggity\'s
+function `equivalentGraphs()`.
+
+```{r}
+MElist <- equivalentDAGs(DAG)
+drawdag(MElist)
+```
+
+
+## Task 2: The data
+
+\- **Simulate some data that fits the DAG.** There are many ways to do
+this. A simple way is just to sample one variable from a normal
+distribution which has another variable as mean. McElreath does this in
+the book a few times, and you can use this as inspiration.
+
+### Simulate data
+```{r warning=FALSE}
+set.seed(3)
+
+# In the simulation area of the venue chosen for Broca's Bodega is normally distributed with a mean of 120 squared meters and a SD of 30 squared meters.
+S = rnorm(300, 120, 30) 
+
+# Beer price (P) is normally distributed with a mean=25 in a "larger-than-average-sized bar" and mean=15 in "smaller-than-average bar". SD=3
+P = rnorm(300, ifelse(S>=mean(S), 25, 15), 3)
+
+# So we need to simulate M, which is, in turn, influenced by P - beer price.
+M = rnorm(300, ifelse(P >= mean(P), 75, 45), 15)
+
+# Now that we have M, we can simulate D, which is influenced by both S and M.
+# The number of people dancing D is influenced by music quality
+D = rnorm(300, ifelse(M>=mean(M), 70, 40), 10)
+
+# Additionally, if the venue of the friday bar is more than 120 squares
+# Around 10 people with an SD of 2 will join the dance floor
+# If the area is less than 120, then 10 +-2 will leave the dancefloor.
+D = D + rnorm(300, ifelse(S<= 120, -20, +20), 2)
+
+### Now we are ready to simulate the outcome variable - beers purchased B.
+
+# In order to simulate B, which is dependant on M, D and P, we have to simulate betas that will encode the relationships between the variables.
+
+bM = rnorm(300, 0.1, 0.01) # For one unit the music gets better people by 0.1 more beer  
+bP = rnorm(300, -0.5, 0.02) # If the price of the beer increases, people will buy less beer
+bD = rnorm(300, 0.1, 0.01) # The more people are dancing, the more beers will be purchased
+
+# Now we finally simulate the outcome variable B.
+B = rpois(300, 6 + bM*M + bP*P + bD*D)
+
+d_sim = tibble(
+  M_unstd = M,
+  S_unstd = S,
+  B_unstd = B,
+  P_unstd = P,
+  D_unstd = D,
+  M = scale(M),
+  S = scale(S),
+  B = scale(B),
+  P = scale(P),
+  D = scale(D)
+)
+
+d_sim <- d_sim[complete.cases(d_sim), ] # removing NAs
+```
+
+
+## Task 3: Statistics
+
+\- Run **multiple linear regression**s to **test the conditional
+independencies** **implied by your DAG**. Make sure to avoid backdoor
+paths. See that the linear model shows the conditional independencies
+implied by your DAG, implying that the data and the DAG are compatible
+(if the linear model doesn\'t show the conditional independencies
+implied by the DAG, the data and the DAG doesn\'t fit).
+
+We got the following three conditional independencies:
+
+B _||_ S | D, M, P
+D _||_ P | M, S
+M _||_ S | P
+
+
+```{r warning=FALSE}
+# testing B _||_ S | D, M, P
+
+# B ~ S 
+mB_S <- quap(
+  alist(
+    B ~ dnorm(mu, sigma),
+    mu <- a + bS*S,
+    a ~ dnorm(0, 0.2),
+    bS ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+# B ~ S + D + M + P
+mB_SDMP <- quap(
+  alist(
+    B ~ dnorm(mu, sigma),
+    mu <- a + bS*S + bD*D + bM*M + bP*P,
+    a ~ dnorm(0, 0.2),
+    bS ~ dnorm(0, 0.5),
+    bD ~ dnorm(0, 0.5),
+    bM ~ dnorm(0, 0.5),
+    bP ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+precis(mB_S)
+precis(mB_SDMP)
+coeftab_plot(coeftab(mB_S, mB_SDMP) , pars=c("bS"))
+```
+
+The plot shows that the effect of S on the outcome B becomes basically 0, when we include the other predictors (D,M,P). This indicates that the conditional independency is indeed reflected in our data.
+
+
+```{r warning=FALSE}
+# testing D _||_ P | M, S
+
+# D ~ P 
+mD_P <- quap(
+  alist(
+    D ~ dnorm(mu, sigma),
+    mu <- a + bP*P,
+    a ~ dnorm(0, 0.2),
+    bP ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+# D ~ P + M + S
+mD_PMS <- quap(
+  alist(
+    D ~ dnorm(mu, sigma),
+    mu <- a + bP*P + bM*M + bS*S,
+    a ~ dnorm(0, 0.2),
+    bP ~ dnorm(0, 0.5),
+    bM ~ dnorm(0, 0.5),
+    bS ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+precis(mD_P)
+precis(mD_PMS)
+coeftab_plot(coeftab(mD_P, mD_PMS) , pars=c("bP"))
+```
+
+
+The plot shows that the effect of P on the outcome D becomes close to0, when we include the other predictors (M, S). This indicates that the conditional independency is indeed reflected in our data. However, not as strongly as one could wish for.
+
+
+```{r warning=FALSE}
+# testing M _||_ S | P
+
+# M ~ S
+mM_S <- quap(
+  alist(
+    M ~ dnorm(mu, sigma),
+    mu <- a + bS*S,
+    a ~ dnorm(0, 0.2),
+    bS ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+# M ~ S + P
+mM_SP <- quap(
+  alist(
+    M ~ dnorm(mu, sigma),
+    mu <- a + bS*S + bP*P,
+    a ~ dnorm(0, 0.2),
+    bS ~ dnorm(0, 0.5),
+    bP ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+precis(mM_S)
+precis(mM_SP)
+coeftab_plot(coeftab(mM_S, mM_SP) , pars=c("bS"))
+```
+
+The plot shows that the effect of S on the outcome M becomes basically 0, when we include the other predictor (P). This indicates that the conditional independency is indeed reflected in our data.
+
+## Task 4: Messing it up
+
+\- Try and **deliberately have an open back door path** and see if you can get wrong inference.
+
+
+Our DAG tells us (as tested with the "adjustmentSets"-function) that we must stratify by P when modelling the effect of M on B to avoid a backdoor path. We tested this with two models; one including P and one without P. 
+
+
+```{r}
+# B ~ M + D (open backdoor)
+mB_MD <- quap(
+  alist(
+    B ~ dnorm(mu, sigma),
+    mu <- a + bM*M + bD*D,
+    a ~ dnorm(0, 0.2),
+    bM ~ dnorm(0, 0.5),
+    bD ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+# B ~ M + D + P (closed backdoor)
+mB_MDP <- quap(
+  alist(
+    B ~ dnorm(mu, sigma),
+    mu <- a + bM*M + bP*P + bD*D,
+    a ~ dnorm(0, 0.2),
+    bM ~ dnorm(0, 0.5),
+    bP ~ dnorm(0, 0.5),
+    bD ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+
+precis(mB_MD)
+precis(mB_MDP)
+coeftab_plot(coeftab(mB_MD, mB_MDP), pars = c("bM", "bD"))
+```
+
+
+**Answer:** We see that the effect of D on B is underestimated unless P is included in the model. :) This makes sense as the effect of M on B is both direct but also indirect via D. 
+
+
+\- Try and deliberately **simulate some data that doesn\'t fit the
+DAG**, or **create a new DAG that doesn\'t fit the data**.
+
+
+We've chosen to create a new DAG and test this on our data. The new, fake DAG is identical to the real one except that we've removed the arrow from P to M. The real and fake DAGs are visualised below: 
+
+```{r Comparing real and fake dag}
+# real DAG (left)
+DAG_real <- dagitty("dag {
+D <- S -> P
+P -> M -> D -> B
+P -> B <- M 
+}")
+# fake DAG (right)
+DAG_fake <- dagitty("dag {
+D <- S -> P
+M -> D -> B
+P -> B <- M 
+}")
+
+coordinates(DAG_real) <- list(x= c(B=0,S=0,M=0, D=-1, P=1), y=c(B=1, M=2, D=2, P=2, S=3))
+coordinates(DAG_fake) <- list(x= c(B=0,S=0,M=0, D=-1, P=1), y=c(B=1, M=2, D=2, P=2, S=3))
+
+DAGs <- list(DAG_real, DAG_fake)
+drawdag(DAGs)
+```
+
+
+These are the implied conditional independencies we get from our two DAGs:
+
+```{r implied conditional independencies}
+# Real DAG
+print(impliedConditionalIndependencies(DAG_real))
+
+# Fake DAG
+impliedConditionalIndependencies(DAG_fake)
+```
+
+
+\- Use the same approach as above to **show that the DAG is wrong** (by
+showing that conditional independencies don\'t exist in the data, for
+example).
+
+We get the following three conditional independencies from our FAKE DAG that are NOT a part of the REAL DAG that we used for simulating our data. 
+D _||_ P | S
+M _||_ P
+M _||_ S
+
+When we test these three, we would suspect them not to show results. 
+
+```{r testing conditional independencies for DAG_fake}
+# testing D _||_ P | S
+
+# D ~ P
+mD_P <- quap(
+  alist(
+    D ~ dnorm(mu, sigma),
+    mu <- a + bP*P,
+    a ~ dnorm(0, 0.2),
+    bP ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+# D ~ P + S
+mD_PS <- quap(
+  alist(
+    D ~ dnorm(mu, sigma),
+    mu <- a + bP*P + bS*S,
+    a ~ dnorm(0, 0.2),
+    bP ~ dnorm(0, 0.5),
+    bS ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+
+precis(mD_P)
+precis(mD_PS)
+coeftab_plot(coeftab(mD_P, mD_PS) , pars=c("bP"))
+
+# testing M _||_ P
+mM_P <- quap(
+  alist(
+    M ~ dnorm(mu, sigma),
+    mu <- a + bP*P,
+    a ~ dnorm(0, 0.2),
+    bP ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+precis(mM_P)
+
+# testing M _||_ S
+mM_S <- quap(
+  alist(
+    M ~ dnorm(mu, sigma),
+    mu <- a + bS*S,
+    a ~ dnorm(0, 0.2),
+    bS ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+  ), data = d_sim
+)
+precis(mM_S)
+```
+
+**Results for: D _||_ P | S:**
+The fake DAG suggests that there's no relationship between D and P once we stratify by S. This is partly reflected in these results, which is kinda weird. 
+
+**Results for: M _||_ P and  M _||_ S:**
+If this was reflected in our data then there should be no relationship between M and P or M and S, however from the "precis" outputs there do seem to be a pretty strong relationship between the two couples of variables. 

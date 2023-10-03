@@ -1,0 +1,583 @@
+---
+title: "Methods 4 -- Portfolio Assignment 3"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+- *Type:* Individual assignment
+- *Due:* 1 May 2022, 23:59
+
+Hey again CogSci\'s :)
+
+So now for the last of the three portfolios :)
+
+This time it\'s an individual one. We will build a workflow and use it
+to analyze a new dataset.
+
+There are seven tasks below. As usual, handing in as a markdown is nice
+:)
+
+```{r, include=FALSE}
+pacman::p_load(rethinking, tidyverse, dagitty, ggplot2, Hmisc)
+```
+
+
+## 1. Get familiar with the data
+
+This dataset contains information about passengers aboard the Titanic.
+
+```{r}
+df_train <- read_csv("data/titanic_train.csv")
+df_test <- read_csv("data/titanic_test.csv")
+```
+The dataset includes 12 variables (as described in the Kaggle entry):
+
+Survival: Survival (0 = No; 1 = Yes)
+Pclass: Passenger Class (1 = 1st; 2 = 2nd; 3 = 3rd)
+Name: Name of passenger
+Sex: Sex of passenger
+Age: Age of passenger
+Sibsp: Number of Siblings/Spouses Aboard for passenger
+Parch: Number of Parents/Children Aboard for passenger
+Ticket: Ticket number
+Fare: Passenger fare (price paid by passenger, can include multiple tickets)
+Cabin: Cabin no. (a lot of NA's in this variable)
+Embarked: Port of embarkation (C = Cherbourg; Q = Queenstown; S = Southampton)
+
+### Plotting some variables of interest
+```{r}
+df_train %>% 
+  ggplot()+
+  geom_histogram(aes(Age, fill = "red"))+
+  xlab("Age")+
+  ylab("Count")+
+  labs(title = "Distribution of passenger age", caption = "We see that age is somewhat normally distributed, skewed a bit towards younger passengers.")+
+  theme(legend.position = "none")
+
+df_train %>% 
+  ggplot()+
+  geom_bar(aes(Pclass, fill = "red"))+
+  xlab("Passenger Class")+
+  ylab("Count")+
+  labs(title = "Passengers by class", caption = "We see that there are more on 3rd class than 1st and 2nd combined.")+
+  theme(legend.position = "none")
+
+df_train %>% 
+  ggplot()+
+  geom_bar(aes(Sex, fill = "red"))+
+  xlab("Sex")+
+  ylab("Count")+
+  labs(title = "Passengers by sex", caption = "Generally more men were aboard the Titanic than women, almost double the amount.")+
+  theme(legend.position = "none")
+
+df_train %>% 
+  ggplot()+
+  geom_bar(aes(Survived, fill = "red"))+
+  xlab("Survival (1 is survived)")+
+  ylab("Count")+
+  labs(title = "Passengers by survival", caption = "Unfortunately, fewer people survived than did not.")+
+  theme(legend.position = "none")
+```
+
+## 2. Choose an estimand / outcome
+
+- **I will do as recommended and choose survival as my outcome variable. :)**
+
+## 3. Make a scientific model (i.e., a DAG)
+
+Make a DAG that seems theoretically reasonable, and that includes some
+of the variables in the dataset. It can include unobserved variables
+too, if you want, but then you have to come up with them.
+
+You might have to return to this point later on ;)
+
+```{r}
+dag <- dagitty( "dag {
+    A -> S
+    C -> S
+    X -> S
+}")
+
+drawdag(dag)
+```
+Considering the variables available, i would expect survival to be predicted by sex, age and class. This is a very simple DAG, but it is based on my ignorance of the famous ship
+
+## 4. Simulate data from the DAG
+
+Age: I would expect a mean age of 40 and a std of 15. When sampling, some values might dip below 0, which of course isn't interpretable when dealing with age, but when simulating it should be okay. There were roughly 2200 people aboard the Titanic, but for simplicity I will sample 1000.
+```{r}
+A = rnorm(1000, 40, 15)
+hist(A, main = paste("Simulated distribution of age"), xlab = "Age")
+```
+
+Class: I would expect less 1st class than 2nd and 3rd, as 1st class probably requires more space and requires more service.
+```{r}
+C = sample(1:3, 1000, prob = c(0.2, 0.4, 0.4), replace=TRUE)
+hist(C, main = paste("Simulated distribution of class"), xlab = "Class")
+```
+
+Sex: Based on the movie and stereotypes, I'd expect more men aboard than women due to the expensive tickets, and assuming that crew members are largely men. 1 = mean, 0 = women
+```{r}
+X = rbinom(1000, 1, 0.6)
+hist(X, main = paste("Simulated distribution of sex"), xlab = "Sex")
+```
+
+Survived: The "base" survival rate is sort of arbitrary, but i'd imagine less people to survive than not. Then again, i don't know how likely people are to survive a sinking ship. The weightings are based on the following: Age is scaled and weighted so that younger people are more likely to survive, higher class are more likely to survive and women are more likely to survive. 
+```{r}
+S = rbinom(1000, 1, prob = 0.4 + (-0.05)*scale(A) + (-0.05)*scale(C) + (-0.1)*scale(X))
+hist(S, main = paste("Simulated distribution of survival"), xlab = "Survival (1 is survived)")
+```
+
+```{r}
+table(is.na(S))
+df_sim <- data.frame(A, C, X, S)
+```
+
+
+**Based on the plots above, i'd say my simulated data isn't that far off from the real data.**
+
+## 5. Make a statistical model
+
+**The relevant predictors for predicting survival, as implied by the DAG, are age, sex and class, therefore S ~ A + X + C. In the model, survived is a binary variable (although treated as an integer), so the posterior is a binomial distribution. There are random slopes for sex and for class, and age is a fixed effect. Priors are chosen based on prior predictive checks. Interactions will be explored when modeling the real data later on.**
+
+## 6. Test the statistical model on the simulated data
+
+```{r, message=FALSE, warning=FALSE}
+# Standardizing
+dat_sim = list(
+  
+  A = scale(df_sim$A),
+  C = as.factor(df_sim$C),
+  X = as.factor(df_sim$X),
+  S = as.integer(df_sim$S)
+)
+
+# Using a modest prior
+m1_1 <- ulam(
+  alist(
+    
+    ## S ~ A + X + C
+    
+    S ~ dbinom(1, p),
+    logit(p) <- aX[X] + aC[C] + bA*A, 
+    aX[X] ~ dnorm(0, 0.5),
+    aC[C] ~ dnorm(0, 0.5),
+    bA ~ dnorm(0, 0.5)
+    
+  ), data = dat_sim, log_lik = TRUE, refresh = 0
+)
+
+# Very narrow priors
+m1_2 <- ulam(
+  alist(
+    
+    ## S ~ A + X + C
+    
+    S ~ dbinom(1, p),
+    logit(p) <- aX[X] + aC[C] + bA*A, 
+    aX[X] ~ dnorm(0, 0.0001),
+    aC[C] ~ dnorm(0, 0.0001),
+    bA ~ dnorm(0, 0.0001)
+    
+  ), data = dat_sim, log_lik = TRUE, refresh = 0
+)
+
+# Very large priors
+m1_3 <- ulam(
+  alist(
+    
+    ## S ~ A + X + C
+    
+    S ~ dbinom(1, p),
+    logit(p) <- aX[X] + aC[C] + bA*A, 
+    aX[X] ~ dnorm(0, 10),
+    aC[C] ~ dnorm(0, 10),
+    bA ~ dnorm(0, 10)
+    
+  ), data = dat_sim, log_lik = TRUE, refresh = 0
+)
+
+precis_plot(precis(m1_1, depth = 2))
+precis_plot(precis(m1_2, depth = 2))
+precis_plot(precis(m1_3, depth = 2))
+```
+
+**This is the statistical model including all variables, congruent with the DAG. This shows indeed that sex has an effect on survival with men dying more than women. Class also affects whether passengers survive or not, with 1st class being most safe, then 2nd and then 3rd. The slope parameter for age shows that older passengers are less likely to survive. The model reflects the intuitions which the data was simulated on. The priors I've chosen for all three parameters are (0, 0.5), since these look most reasonable in regards to my expectations of the values. The too narrow priors make the effects crazy small, and increases uncertainty wildly. Too broad priors have the same effect but on a larger scale. I will stick with priors of mean 0 and std 0.5.**
+
+### A note on priors
+
+```{r, message=FALSE, warning=FALSE}
+# Extracting priors
+prior1 <- extract.prior(m1_1)
+prior2 <- extract.prior(m1_2)
+prior3 <- extract.prior(m1_3)
+```
+
+```{r}
+par(mfrow=c(1,3))
+dens(inv_logit(prior1$aX), adj=0.1)
+dens(inv_logit(prior1$aC), adj=0.1)
+dens(inv_logit(prior1$bA), adj=0.1)
+mtext("Optimal priors", side=3, line=-2, cex=2, outer = TRUE)
+```
+
+```{r}
+par(mfrow=c(1,3))
+dens(inv_logit(prior2$aX), adj=0.1)
+dens(inv_logit(prior2$aC), adj=0.1)
+dens(inv_logit(prior2$bA), adj=0.1)
+mtext("Narrow priors", side=3, line=-2, cex=2, outer = TRUE)
+```
+
+```{r}
+par(mfrow=c(1,3))
+dens(inv_logit(prior3$aX), adj=0.1)
+dens(inv_logit(prior3$aC), adj=0.1)
+dens(inv_logit(prior3$bA), adj=0.1)
+mtext("Wide priors", side=3, line=-2, cex=2, outer = TRUE)
+```
+
+
+**These density plots confirm that my choice of priors (optimal) are at least reasonable. When using priors with a std of 10, the model is very sure of either surival or not, which i know isn't the case in the data. When using very narrow priors, it is highly unlikely that the real values are in this distribution space.** 
+
+### Testing conditional independencies
+
+```{r}
+impliedConditionalIndependencies(dag)
+```
+
+```{r,message=FALSE, warning=FALSE}
+# A _||_ C
+m3 <- ulam(
+  alist(
+    
+    ## A ~ C
+    
+    A ~ dnorm(mu, sigma),
+    mu <- aC[C],
+    aC[C] ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+    
+  ), data = dat_sim, log_lik = TRUE, refresh = 0
+)
+
+# A _||_ X
+# I need X as integer for it to be the outcome, otherwise i get an error
+dat_sim_X <- dat_sim
+dat_sim_X$X <- as.integer(dat_sim_X$X)-1
+
+m4 <- ulam(
+  alist(
+    
+    ## X ~ A
+    
+    X ~ dbinom(1, p),
+    logit(p) <- a + bA*A, 
+    a ~ dnorm(0, 0.5),
+    bA ~ dnorm(0, 0.5)
+    
+  ), data = dat_sim_X, log_lik = TRUE, refresh = 0
+)
+
+# C _||_ X
+m5 <- ulam(
+  alist(
+    
+    ## X ~ C
+    
+    X ~ dbinom(1, p),
+    logit(p) <- aC[C], 
+    aC[C] ~ dnorm(0, 0.5)
+    
+  ), data = dat_sim_X, log_lik = TRUE, refresh = 0
+)
+
+precis_plot(precis(m3, depth = 2))
+precis_plot(precis(m4, depth = 2))
+precis_plot(precis(m5, depth = 2))
+```
+
+**Since all my predictors are completely independent of each other (i.e. there is no other variables which must be conditioned upon when modeling), I've made three models, to assess whether these three are truly independent. If so, there should be little to no predictive power of modeling one variable by another. This seems to be true for sex on class and sex on age, but there seems to be some effect of age on class. Since i have simulated the data, I know that these to variables are independent of each other, so I must conclude that the correlation is merely spurious.**
+
+
+## 7. Assess whether the DAG is compatible with the data
+
+```{r}
+adjustmentSets(dag, exposure = "X", outcome = "S")
+```
+
+**I do not need to stratify on any variables to get the individual effects of my variables. Below is the total effects model using the real data.**
+
+```{r, message=FALSE, warning=FALSE}
+# Preprocessing data
+df_train <- df_train %>% 
+  select(Survived, Pclass, Age, Sex)
+
+# Omitting NAs
+df_train <- na.omit(df_train)
+
+# Standardizing
+dat = list(
+  
+  A = scale(df_train$Age),
+  C = as.factor(df_train$Pclass),
+  X = as.factor(df_train$Sex),
+  S = as.integer(df_train$Survived)
+)
+
+# Total effects
+m1_real <- ulam(
+  alist(
+    
+    ## S ~ A + X + C
+    
+    S ~ dbinom(1, p),
+    logit(p) <- aX[X] + aC[C] + bA*A, 
+    aX[X] ~ dnorm(0, 0.5),
+    aC[C] ~ dnorm(0, 0.5),
+    bA ~ dnorm(0, 0.5)
+    
+  ), data = dat, log_lik = TRUE, refresh = 0
+)
+```
+
+**Running the model with the real data yields quite similar parameter values as when using my simulated data. So far so good.**
+
+```{r}
+impliedConditionalIndependencies(dag)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Testing conditional independencies
+
+# A _||_ C
+m6 <- ulam(
+  alist(
+    
+    ## A ~ C
+    
+    A ~ dnorm(mu, sigma),
+    mu <- aC[C],
+    aC[C] ~ dnorm(0, 0.5),
+    sigma ~ dexp(1)
+    
+  ), data = dat, log_lik = TRUE, refresh = 0
+)
+
+# A _||_ X
+# I need X as integer for it to be the outcome, otherwise i get an error
+dat_X <- dat
+dat_X$X <- as.integer(dat_X$X)-1
+
+m7 <- ulam(
+  alist(
+    
+    ## X ~ A
+    
+    X ~ dbinom(1, p),
+    logit(p) <- a + bA*A, 
+    a ~ dnorm(0, 0.2),
+    bA ~ dnorm(0, 0.5)
+    
+  ), data = dat_X, log_lik = TRUE, refresh = 0
+)
+
+# C _||_ X
+m8 <- ulam(
+  alist(
+    
+    ## X ~ C
+    
+    X ~ dbinom(1, p),
+    logit(p) <- aC[C], 
+    aC[C] ~ dnorm(0, 0.5)
+    
+  ), data = dat_X, log_lik = TRUE, refresh = 0
+)
+
+precis_plot(precis(m6, depth = 2))
+precis_plot(precis(m7, depth = 2))
+precis_plot(precis(m8, depth = 2))
+```
+
+**It appears that i was too naive. In the real data, both age and sex seems to predict class in some way. I'll incorporate this in a new DAG.**
+
+```{r}
+dag2 <- dagitty( "dag {
+    A -> S
+    A -> C
+    C -> S
+    X -> S
+    X -> C
+}")
+
+drawdag(dag2)
+```
+**This also makes for a much more interesting DAG. I'll check the conditional independencies**
+
+```{r}
+impliedConditionalIndependencies(dag2)
+```
+
+```{r}
+adjustmentSets(dag2, exposure = "A", outcome = "S")
+adjustmentSets(dag2, exposure = "C", outcome = "S")
+adjustmentSets(dag2, exposure = "X", outcome = "S")
+```
+**This doesn't change much regarding the statistical model structure, as I now know that i must include all three variables to not have any backdoors open. Therefore i will continue to include all three predictors in my model.**
+
+## 8. Do model comparison
+
+### Comparing my models with different priors
+
+```{r, message=FALSE, warning=FALSE}
+# Modeling the real data with different priors
+
+# Very narrow priors
+m2_real <- ulam(
+  alist(
+    
+    ## S ~ A + X + C
+    
+    S ~ dbinom(1, p),
+    logit(p) <- aX[X] + aC[C] + bA*A, 
+    aX[X] ~ dnorm(0, 0.0001),
+    aC[C] ~ dnorm(0, 0.0001),
+    bA ~ dnorm(0, 0.0001)
+    
+  ), data = dat, log_lik = TRUE, refresh = 0
+)
+
+
+# Very broad priors
+m3_real <- ulam(
+  alist(
+    
+    ## S ~ A + X + C
+    
+    S ~ dbinom(1, p),
+    logit(p) <- aX[X] + aC[C] + bA*A, 
+    aX[X] ~ dnorm(0, 10),
+    aC[C] ~ dnorm(0, 10),
+    bA ~ dnorm(0, 10)
+    
+  ), data = dat, log_lik = TRUE, refresh = 0
+)
+
+# Comparing model with different priors
+
+compare(m1_real, m2_real, m3_real)
+compare(m1_real, m2_real, m3_real, func = PSIS)
+```
+
+**Even though the model with too broad priors has lower WAIC and PSIS score than my optimal-prior model, I know that this model doesn't make sense with my knowledge of the data.**
+
+# Making contrast plots for the model with optimal priors
+
+```{r, message=FALSE, warning=FALSE}
+# Contrast plots
+posterior1 <- extract.samples(m1_real)
+```
+
+```{r}
+precis(m1_real, depth = 3)
+```
+
+
+```{r}
+par(mfrow=c(2,2))
+plot(density(inv_logit(posterior1$aX[,1]) - inv_logit(posterior1$aX[,2])), main="Contrast plot for sex")
+plot(density(inv_logit(posterior1$aC[,1]) - inv_logit(posterior1$aC[,2])), main="Contrast plot for class 1 & 2")
+plot(density(inv_logit(posterior1$aC[,1]) - inv_logit(posterior1$aC[,3])), main="Contrast plot for class 1 & 3")
+plot(density(inv_logit(posterior1$aC[,2]) - inv_logit(posterior1$aC[,3])), main="Contrast plot for class 2 & 3")
+```
+
+**The contrast plot for sex shows that women have somewhere between 50-55% higher chance of surviving than men. Passengers traveling on 1st class are somewhere between 20-25% more likely to survive than passengers on 2nd class, and somewhere between 47-52% more likely to survive than passengers on 3rd class. Passengers on 2nd class are somewhere between 26-29% more likely to survive than passengers on 3rd class.**
+
+### Trying out a model with an interaction between sex and class
+
+```{r, message=FALSE, warning=FALSE}
+# Interaction between sex and class
+m1_real_int <- ulam(
+  alist(
+    
+    #
+    
+    S ~ dbinom(1, p),
+    logit(p) <- I[X,C]+ bA*A,
+    matrix[X,C]:I ~ normal(0, 0.5),
+    bA ~ dnorm(0, 0.5)
+    ), data=dat, cores = 4, log_lik = TRUE, refresh = 0)
+
+# Checking the parameter estimates
+precis(m1_real_int, depth=3)
+precis_plot(precis(m1_real_int, 3))
+```
+
+**The interaction model shows that for both sexes, 1st class is the safest. Though for females, 1st and 2nd class are close to each other, with 3rd class being less safe. For males, both 2nd and 3rd class are relatively unsafe compared to 1st class.**
+
+```{r}
+# Comparing interaction model to no interaction model
+compare(m1_real, m1_real_int)
+```
+
+**The interaction model also has a slightly lower WAIC score, and a smaller standard error as well.**
+
+## 9. Use the statistical model to do inference
+
+```{r}
+# Effect sizes and posterior predictions
+post_int <- extract.samples(m1_real_int)
+post_precis <- precis(post_int, depth=3)
+survive_probability <- inv_logit(post_precis$mean)
+Category <- c("Woman 1. Class", "Woman 2. Class", "Woman 3. Class", "Men 1. Class", "Men 2. Class", "Men 3. Class", "Age")
+
+df <- tibble(Category, survive_probability)
+df <- df %>% 
+  filter(Category != "Age")
+
+df
+```
+
+```{r}
+# Using model to predict survival on new data
+survival_pred <- sim(m1_real_int, data=dat)
+prediction <- round(colMeans(survival_pred), 0)
+survived <- dat$S
+survived_df <- data.frame(survived, prediction)
+```
+
+```{r}
+# Plotting confusion matrix to show predictions
+pacman::p_load(caret, scales)
+survived_df %>%
+  count(survived, prediction) %>%
+  mutate(across(c(survived, prediction), ~str_wrap(., 20))) %>%
+  group_by(survived) %>%
+  mutate(percent = n / sum(n)) %>%
+  ggplot(aes(x = survived, y = reorder(prediction, desc(prediction)), fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "darkred") +
+  geom_text(aes(label = round(percent*100, digits = 1))) +
+  scale_x_discrete(position = "top") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        panel.grid = element_blank(),
+        plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Actual survival",
+       y = "Predicted survival",
+       fill = "% of assignments",
+       title = "Simulated predictions of survived from interaction model")
+```
+
+
+
+**The data frame shows the average predictions for survival based on the interaction of class and sex with age as a fixed effect.**
+
+**Aboard the Titanic, women travelling on 1st and 3rd class had highest probability of surviving. Both men and women on 2nd class were around chance-level of surviving, a bit lower for men though. Ultimately, according to the model, men on 1st and 3rd class had a very small chance of survival. The estimated parameter for age shows that as age increases, people are less likely to survive, although the effect isn't that large.**
+
+**Unfortunately, my DAG does not fit the data. Through further exploration of the data, better inference could be made. **
+
+**The table below shows the simulated predictions for survival based on the interaction model. It has high accuracy predicting deaths, but my model doesn't predict survival that well (many false alarms / type 2 errors). This is expected as my data doesn't fit the DAG.**
